@@ -4,20 +4,21 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Bundle
 import android.util.Log
+import android.view.Gravity
 import android.view.MotionEvent
-import android.widget.FrameLayout
-import android.widget.ImageView
-import android.widget.TextView
+import android.view.View
+import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.marginEnd
 import com.example.photoeditorcanva.databinding.ActivityMainBinding
 
 class MarkerActivity : AppCompatActivity() {
     private val binding by lazy { ActivityMainBinding.inflate(layoutInflater) }
 
-    // Store all markers (optional, for tracking or saving later)
     private val markers = mutableListOf<Marker>()
     private var pinUnit = "1"
     private var pinStatus = false
+    private var showDeleteIcons = false
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -29,8 +30,7 @@ class MarkerActivity : AppCompatActivity() {
     }
 
     @SuppressLint("ClickableViewAccessibility")
-    private fun setUpMarker(){
-        // Add marker on image tap
+    private fun setUpMarker() {
         binding.backgroundImage.post {
             val imgWidth = binding.backgroundImage.width
             val imgHeight = binding.backgroundImage.height
@@ -42,7 +42,7 @@ class MarkerActivity : AppCompatActivity() {
 
                     val newMarker = Marker(xPercent, yPercent)
 
-                    if (pinStatus){
+                    if (pinStatus) {
                         markers.add(newMarker)
                         addDraggableMarker(this, binding.imageContainer, binding.backgroundImage, newMarker)
                     }
@@ -52,30 +52,34 @@ class MarkerActivity : AppCompatActivity() {
         }
     }
 
-    private fun onClick(){
+    private fun onClick() {
         binding.pin.setOnClickListener {
-            if (pinStatus){
-                pinStatus = false
-                binding.pin.setBackgroundResource(R.color.red)
-            }else{
-                pinStatus = true
-                binding.pin.setBackgroundResource(R.color.green)
-            }
+            pinStatus = !pinStatus
+            binding.pin.setBackgroundResource(if (pinStatus) R.color.green else R.color.red)
         }
 
         binding.pinUnit.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 pinUnit = s.toString()
             }
-
             override fun afterTextChanged(s: android.text.Editable?) {}
         })
 
+        binding.toggleDelete.setOnClickListener {
+            showDeleteIcons = !showDeleteIcons
+            updateDeleteIconsVisibility()
+        }
     }
 
-    data class Marker(var xPercent: Float, var yPercent: Float)
+    data class Marker(var xPercent: Float, var yPercent: Float, var view: View? = null)
+
+    private fun updateDeleteIconsVisibility() {
+        markers.forEach {
+            val deleteIcon = it.view?.findViewWithTag<ImageView>("deleteIcon")
+            deleteIcon?.visibility = if (showDeleteIcons) View.VISIBLE else View.GONE
+        }
+    }
 
     @SuppressLint("ClickableViewAccessibility")
     fun addDraggableMarker(
@@ -84,37 +88,60 @@ class MarkerActivity : AppCompatActivity() {
         imageView: ImageView,
         marker: Marker
     ) {
-
         val markerLayout = FrameLayout(context).apply {
-            layoutParams = FrameLayout.LayoutParams(90, 110)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ) // increase height to fit delete icon
+            clipChildren = false
+            clipToPadding = false
         }
 
         val markerIcon = ImageView(context).apply {
-            setImageResource(R.drawable.locationpointer) // your marker icon
+            setImageResource(R.drawable.locationpointer)
+            setPadding(0,10,20,0)
             scaleType = ImageView.ScaleType.FIT_XY
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
+            layoutParams = FrameLayout.LayoutParams(90, 130).apply {
+                topMargin = 30
+                marginEnd = 10
+            }
         }
 
         val markerLabel = TextView(context).apply {
             text = pinUnit
-            Log.d("Pin value", pinUnit)
             setTextColor(resources.getColor(android.R.color.black))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             elevation = 10f
-            setPadding(0,10,0,0)
+            setPadding(25, 55, 0, 0)
             textSize = 12f
-            gravity = android.view.Gravity.CENTER_HORIZONTAL
+            gravity = Gravity.CENTER_HORIZONTAL
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
         }
 
+
+
+        val deleteIcon = ImageView(context).apply {
+            visibility = if (showDeleteIcons) View.VISIBLE else View.GONE
+            tag = "deleteIcon"
+            setImageResource(R.drawable.baseline_auto_delete_24)
+            layoutParams = FrameLayout.LayoutParams(60, 80).apply {
+                gravity = Gravity.TOP or Gravity.END
+                topMargin = 8
+            }
+            setPadding(10, 2, 2, 2)
+            elevation = 10f
+            setOnClickListener {
+                container.removeView(markerLayout)
+                markers.remove(marker)
+            }
+        }
+
         markerLayout.addView(markerIcon)
         markerLayout.addView(markerLabel)
+        markerLayout.addView(deleteIcon)
 
         imageView.post {
             val imgWidth = imageView.width
@@ -123,9 +150,9 @@ class MarkerActivity : AppCompatActivity() {
             markerLayout.x = marker.xPercent * imgWidth - 40
             markerLayout.y = marker.yPercent * imgHeight - 40
 
+            marker.view = markerLayout
             container.addView(markerLayout)
 
-            // Set up drag logic
             var dX = 0f
             var dY = 0f
 
@@ -148,7 +175,6 @@ class MarkerActivity : AppCompatActivity() {
                     MotionEvent.ACTION_UP -> {
                         marker.xPercent = (v.x + v.width / 2) / imgWidth
                         marker.yPercent = (v.y + v.height / 2) / imgHeight
-
                         Log.d("Marker", "New position: ${marker.xPercent}, ${marker.yPercent}")
                     }
                 }

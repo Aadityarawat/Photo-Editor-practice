@@ -22,6 +22,7 @@
             android:scaleType="fitXY"
             />
 
+
     </FrameLayout>
 
     <LinearLayout
@@ -30,6 +31,7 @@
         android:orientation="horizontal"
         android:layout_margin="20dp"
         android:padding="20dp"
+        android:gravity="center"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintBottom_toBottomOf="parent">
@@ -51,6 +53,13 @@
             android:background="@color/red"
             android:padding="10dp"
             android:layout_marginStart="10dp"/>
+
+        <Button
+            android:id="@+id/toggleDelete"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Toggle Delete"
+             />
 
 
     </LinearLayout>
