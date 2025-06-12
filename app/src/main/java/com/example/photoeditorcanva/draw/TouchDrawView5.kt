@@ -6,13 +6,12 @@ import android.net.Uri
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import java.lang.Math.toDegrees
 import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.min
-import kotlin.math.max
-import java.lang.Math.toDegrees
 
-class TouchDrawView3 @JvmOverloads constructor(
+class TouchDrawView5 @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
 ) : View(context, attrs) {
 
@@ -36,6 +35,8 @@ class TouchDrawView3 @JvmOverloads constructor(
     private var selectionBounds = RectF()
     private val selectionStart = PointF()
     private val selectionEnd = PointF()
+    private var selectionMatrix = Matrix()
+    private val transformedSelectionPath = Path()
 
     private var isErasing = false
     private var isErasingActive = false
@@ -46,7 +47,7 @@ class TouchDrawView3 @JvmOverloads constructor(
     private var initialAngle = 0.0
     private var initialDistance = 0f
 
-    private var transformOriginalPaths: List<Path>? = null
+    private var gestureActions = mutableListOf<DrawAction>()
 
     private val SELECTION_PADDING = 20f
 
@@ -54,7 +55,7 @@ class TouchDrawView3 @JvmOverloads constructor(
         data class Add(val path: Path) : DrawAction()
         data class Erase(val path: Path) : DrawAction()
         data class Compound(val actions: List<DrawAction>) : DrawAction()
-        data class Transform(val original: List<Path>, val transformed: List<Path>) : DrawAction()
+        data class Transform(val affected: List<Path>, val matrix: Matrix, val inverse: Matrix) : DrawAction()
     }
 
     fun toggleSelectionMode(enabled: Boolean) {
@@ -73,52 +74,42 @@ class TouchDrawView3 @JvmOverloads constructor(
     fun undo() {
         if (undoStack.isNotEmpty()) {
             val action = undoStack.removeAt(undoStack.lastIndex)
-            when (action) {
-                is DrawAction.Add -> paths.remove(action.path)
-                is DrawAction.Erase -> paths.add(action.path)
-                is DrawAction.Compound -> action.actions.reversed().forEach { undoAction(it) }
-                is DrawAction.Transform -> {
-                    paths.removeAll(action.transformed)
-                    paths.addAll(action.original)
-                }
-            }
+            performUndoAction(action)
             redoStack.add(action)
             updateSelectionBounds()
             invalidate()
         }
     }
 
+    private fun performUndoAction(action: DrawAction) {
+        when (action) {
+            is DrawAction.Add -> paths.remove(action.path)
+            is DrawAction.Erase -> paths.add(action.path)
+            is DrawAction.Compound -> action.actions.reversed().forEach { performUndoAction(it) }
+            is DrawAction.Transform -> {
+                action.affected.forEach { it.transform(action.inverse) }
+            }
+        }
+    }
+
     fun redo() {
         if (redoStack.isNotEmpty()) {
             val action = redoStack.removeAt(redoStack.lastIndex)
-            when (action) {
-                is DrawAction.Add -> paths.add(action.path)
-                is DrawAction.Erase -> paths.remove(action.path)
-                is DrawAction.Compound -> action.actions.forEach { redoAction(it) }
-                is DrawAction.Transform -> {
-                    paths.removeAll(action.original)
-                    paths.addAll(action.transformed)
-                }
-            }
+            performRedoAction(action)
             undoStack.add(action)
             updateSelectionBounds()
             invalidate()
         }
     }
 
-    private fun undoAction(action: DrawAction) {
-        when (action) {
-            is DrawAction.Add -> paths.remove(action.path)
-            is DrawAction.Erase -> paths.add(action.path)
-            else -> {}
-        }
-    }
-
-    private fun redoAction(action: DrawAction) {
+    private fun performRedoAction(action: DrawAction) {
         when (action) {
             is DrawAction.Add -> paths.add(action.path)
             is DrawAction.Erase -> paths.remove(action.path)
-            else -> {}
+            is DrawAction.Compound -> action.actions.forEach { performRedoAction(it) }
+            is DrawAction.Transform -> {
+                action.affected.forEach { it.transform(action.matrix) }
+            }
         }
     }
 
@@ -135,18 +126,26 @@ class TouchDrawView3 @JvmOverloads constructor(
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         draw(canvas)
+
         val filename = "drawing_${System.currentTimeMillis()}.png"
         val contentValues = android.content.ContentValues().apply {
             put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, filename)
             put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/png")
             put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/Drawings")
         }
+
         val contentResolver = context.contentResolver
-        val uri = contentResolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-        uri?.let {
-            contentResolver.openOutputStream(it)?.use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                return uri
+        val uri = contentResolver.insert(
+            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            contentValues
+        )
+
+        if (uri != null) {
+            contentResolver.openOutputStream(uri).use { out ->
+                if (out != null) {
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    return uri
+                }
             }
         }
         return null
@@ -158,6 +157,8 @@ class TouchDrawView3 @JvmOverloads constructor(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                gestureActions.clear()
+
                 if (isErasing) {
                     isErasingActive = true
                     tempEraseActions.clear()
@@ -168,7 +169,6 @@ class TouchDrawView3 @JvmOverloads constructor(
                         isManipulatingSelection = true
                         lastTouchX = x
                         lastTouchY = y
-                        transformOriginalPaths = clonePaths(selectedPaths)
                     } else {
                         isDrawingSelectionBox = true
                         selectionStart.set(x, y)
@@ -185,7 +185,6 @@ class TouchDrawView3 @JvmOverloads constructor(
                 if (event.pointerCount == 2 && selectedPaths.isNotEmpty()) {
                     initialAngle = getAngle(event)
                     initialDistance = getSpacing(event)
-                    transformOriginalPaths = clonePaths(selectedPaths)
                 }
             }
 
@@ -199,11 +198,15 @@ class TouchDrawView3 @JvmOverloads constructor(
                     val scale = newDistance / initialDistance
                     val cx = selectionBounds.centerX()
                     val cy = selectionBounds.centerY()
+
                     val matrix = Matrix().apply {
                         postScale(scale, scale, cx, cy)
                         postRotate(angleDelta, cx, cy)
                     }
+                    val inverse = Matrix().apply { matrix.invert(this) }
                     selectedPaths.forEach { it.transform(matrix) }
+                    gestureActions.add(DrawAction.Transform(selectedPaths.toList(), matrix, inverse))
+
                     initialAngle = newAngle
                     initialDistance = newDistance
                 } else if (event.pointerCount == 1) {
@@ -214,7 +217,9 @@ class TouchDrawView3 @JvmOverloads constructor(
                             val dx = x - lastTouchX
                             val dy = y - lastTouchY
                             val matrix = Matrix().apply { setTranslate(dx, dy) }
+                            val inverse = Matrix().apply { matrix.invert(this) }
                             selectedPaths.forEach { it.transform(matrix) }
+                            gestureActions.add(DrawAction.Transform(selectedPaths.toList(), matrix, inverse))
                             lastTouchX = x
                             lastTouchY = y
                             updateSelectionBounds()
@@ -242,12 +247,12 @@ class TouchDrawView3 @JvmOverloads constructor(
                     if (isDrawingSelectionBox) selectPathsWithinBox()
                     isDrawingSelectionBox = false
                     isManipulatingSelection = false
-                    transformOriginalPaths?.let { original ->
-                        val transformed = clonePaths(selectedPaths)
-                        undoStack.add(DrawAction.Transform(original, transformed))
+
+                    if (gestureActions.isNotEmpty()) {
+                        undoStack.add(DrawAction.Compound(gestureActions.toList()))
                         redoStack.clear()
                     }
-                    transformOriginalPaths = null
+
                 } else {
                     currentPath.lineTo(x, y)
                     paths.add(currentPath)
@@ -255,6 +260,8 @@ class TouchDrawView3 @JvmOverloads constructor(
                     redoStack.clear()
                     currentPath = Path()
                 }
+
+                gestureActions.clear()
                 invalidate()
                 return true
             }
@@ -275,6 +282,7 @@ class TouchDrawView3 @JvmOverloads constructor(
             var distance = 0f
             var segment = Path()
             var isActive = false
+            var hasErased = false
 
             while (distance <= len) {
                 if (measure.getPosTan(distance, pos, null)) {
@@ -282,6 +290,7 @@ class TouchDrawView3 @JvmOverloads constructor(
                     val dy = pos[1] - y
                     val dist = kotlin.math.sqrt(dx * dx + dy * dy)
                     val outside = dist > eraseRadius
+
                     if (outside) {
                         if (!isActive) {
                             segment.moveTo(pos[0], pos[1])
@@ -291,18 +300,21 @@ class TouchDrawView3 @JvmOverloads constructor(
                         toAdd.add(Path(segment))
                         segment.reset()
                         isActive = false
+                        hasErased = true
                     }
                 }
                 distance += samplingStep
             }
             if (isActive && !segment.isEmpty) toAdd.add(Path(segment))
-            if (toAdd.isNotEmpty()) toRemove.add(original)
+            if (hasErased) toRemove.add(original)
         }
 
         paths.removeAll(toRemove)
         paths.addAll(toAdd)
+
         toRemove.forEach { tempEraseActions.add(DrawAction.Erase(it)) }
         toAdd.forEach { tempEraseActions.add(DrawAction.Add(it)) }
+
         invalidate()
     }
 
@@ -322,14 +334,17 @@ class TouchDrawView3 @JvmOverloads constructor(
         val box = RectF(
             min(selectionStart.x, selectionEnd.x) - SELECTION_PADDING,
             min(selectionStart.y, selectionEnd.y) - SELECTION_PADDING,
-            max(selectionStart.x, selectionEnd.x) + SELECTION_PADDING,
-            max(selectionStart.y, selectionEnd.y) + SELECTION_PADDING
+            maxOf(selectionStart.x, selectionEnd.x) + SELECTION_PADDING,
+            maxOf(selectionStart.y, selectionEnd.y) + SELECTION_PADDING
         )
+
         selectedPaths.clear()
         for (path in paths) {
             val bounds = RectF()
             path.computeBounds(bounds, true)
-            if (RectF.intersects(bounds, box)) selectedPaths.add(path)
+            if (RectF.intersects(bounds, box)) {
+                selectedPaths.add(path)
+            }
         }
         updateSelectionBounds()
     }
@@ -346,12 +361,9 @@ class TouchDrawView3 @JvmOverloads constructor(
             selectedPaths[i].computeBounds(tmp, true)
             allBounds.union(tmp)
         }
+
         allBounds.inset(-SELECTION_PADDING, -SELECTION_PADDING)
         selectionBounds = allBounds
-    }
-
-    private fun clonePaths(paths: List<Path>): List<Path> = paths.map {
-        Path(it) // copy constructor
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -374,8 +386,8 @@ class TouchDrawView3 @JvmOverloads constructor(
             val box = RectF(
                 min(selectionStart.x, selectionEnd.x) - SELECTION_PADDING,
                 min(selectionStart.y, selectionEnd.y) - SELECTION_PADDING,
-                max(selectionStart.x, selectionEnd.x) + SELECTION_PADDING,
-                max(selectionStart.y, selectionEnd.y) + SELECTION_PADDING
+                maxOf(selectionStart.x, selectionEnd.x) + SELECTION_PADDING,
+                maxOf(selectionStart.y, selectionEnd.y) + SELECTION_PADDING
             )
             canvas.drawRect(box, boxPaint)
         }

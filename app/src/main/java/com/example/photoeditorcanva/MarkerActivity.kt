@@ -90,7 +90,7 @@ class MarkerActivity : AppCompatActivity() {
         }
 
         val markerIcon = ImageView(context).apply {
-            setImageResource(R.drawable.location) // your marker icon
+            setImageResource(R.drawable.locationpointer) // your marker icon
             scaleType = ImageView.ScaleType.FIT_XY
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -104,8 +104,8 @@ class MarkerActivity : AppCompatActivity() {
             setTextColor(resources.getColor(android.R.color.black))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             elevation = 10f
-            setPadding(0,15,0,0)
-            textSize = 16f
+            setPadding(0,10,0,0)
+            textSize = 12f
             gravity = android.view.Gravity.CENTER_HORIZONTAL
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
