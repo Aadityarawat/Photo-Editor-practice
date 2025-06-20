@@ -112,7 +112,7 @@ class MarkerActivity : AppCompatActivity() {
             setTextColor(resources.getColor(android.R.color.black))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             elevation = 10f
-            setPadding(25, 55, 0, 0)
+            setPadding(25, 56, 0, 0)
             textSize = 12f
             gravity = Gravity.CENTER_HORIZONTAL
             layoutParams = FrameLayout.LayoutParams(

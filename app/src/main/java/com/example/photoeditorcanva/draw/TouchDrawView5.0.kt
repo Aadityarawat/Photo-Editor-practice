@@ -10,23 +10,16 @@ import android.graphics.*
 import android.graphics.fonts.Font
 import android.net.Uri
 import android.util.AttributeSet
+import android.util.Log
 import android.view.MotionEvent
 import android.view.View
+import com.example.photoeditorcanva.sample.InteractionMode
 import java.lang.Math.toDegrees
 import kotlin.math.*
 
 class TouchDrawView50 @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
 ) : View(context, attrs) {
-
-    private val paths = mutableListOf<Path>()
-    private val selectedPaths = mutableSetOf<Path>()
-    private var currentPath = Path()
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        strokeWidth = 6f
-        style = Paint.Style.STROKE
-    }
 
     private val undoStack = mutableListOf<DrawAction>()
     private val redoStack = mutableListOf<DrawAction>()
@@ -49,6 +42,22 @@ class TouchDrawView50 @JvmOverloads constructor(
     private var eraseSize = 30f
     private var brushColor : Int?= null
     private var brushSize : Float?= null
+
+
+    var interactionMode: InteractionMode = InteractionMode.DRAW
+
+    fun setMode(mode: InteractionMode) {
+        interactionMode = mode
+    }
+
+    private val paths = mutableListOf<Path>()
+    private val selectedPaths = mutableSetOf<Path>()
+    private var currentPath = Path()
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = brushColor ?: Color.RED
+        strokeWidth = brushSize ?: 6f
+        style = Paint.Style.STROKE
+    }
 
     sealed class DrawAction {
         data class Add(val path: Path): DrawAction()
@@ -75,6 +84,7 @@ class TouchDrawView50 @JvmOverloads constructor(
     fun setBrush(color: Int?, size: Float?){
         brushSize = size
         brushColor = color
+        Log.d("setBrush","$size  $color")
     }
 
     fun undo() {
@@ -166,106 +176,112 @@ class TouchDrawView50 @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        val x = event.x
-        val y = event.y
+        when(interactionMode){
+            InteractionMode.DRAW -> {
+                val x = event.x
+                val y = event.y
 
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                gestureActions.clear()
-                if (isErasing) {
-                    eraseAt(x, y)
-                    return true
-                }
-                if (isSelecting) {
-                    if (selectionBounds.contains(x, y)) {
-                        isManipulatingSelection = true
-                        lastTouchX = x
-                        lastTouchY = y
-                    } else {
-                        isDrawingSelectionBox = true
-                        selectionStart.set(x, y)
-                        selectionEnd.set(x, y)
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        gestureActions.clear()
+                        if (isErasing) {
+                            eraseAt(x, y)
+                            return true
+                        }
+                        if (isSelecting) {
+                            if (selectionBounds.contains(x, y)) {
+                                isManipulatingSelection = true
+                                lastTouchX = x
+                                lastTouchY = y
+                            } else {
+                                isDrawingSelectionBox = true
+                                selectionStart.set(x, y)
+                                selectionEnd.set(x, y)
+                            }
+                        } else {
+                            currentPath = Path().apply { moveTo(x, y) }
+                        }
                     }
-                } else {
-                    currentPath = Path().apply { moveTo(x, y) }
+
+                    MotionEvent.ACTION_POINTER_DOWN -> {
+                        if (event.pointerCount == 2 && selectedPaths.isNotEmpty()) {
+                            initialAngle = getAngle(event)
+                            initialDistance = getSpacing(event)
+                        }
+                    }
+
+                    MotionEvent.ACTION_MOVE -> {
+                        if (isErasing) {
+                            eraseAt(x, y)
+                        } else if (event.pointerCount == 2 && selectedPaths.isNotEmpty()) {
+                            val angle = getAngle(event)
+                            val dist = getSpacing(event)
+                            val scale = dist / initialDistance
+                            val rotate = (angle - initialAngle).toFloat()
+                            val cx = selectionBounds.centerX()
+                            val cy = selectionBounds.centerY()
+                            val mtx = Matrix().apply {
+                                postScale(scale, scale, cx, cy)
+                                postRotate(rotate, cx, cy)
+                            }
+                            val inv = Matrix().apply { mtx.invert(this) }
+                            selectedPaths.forEach { it.transform(mtx) }
+                            gestureActions.add(DrawAction.Transform(selectedPaths.toList(), mtx, inv))
+                            initialAngle = angle
+                            initialDistance = dist
+                            updateSelectionBounds()
+                        } else if (isSelecting) {
+                            if (isDrawingSelectionBox) {
+                                selectionEnd.set(x, y)
+                            } else if (isManipulatingSelection) {
+                                val dx = x - lastTouchX
+                                val dy = y - lastTouchY
+                                val mtx = Matrix().apply { setTranslate(dx, dy) }
+                                val inv = Matrix().apply { mtx.invert(this) }
+                                selectedPaths.forEach { it.transform(mtx) }
+                                gestureActions.add(DrawAction.Transform(selectedPaths.toList(), mtx, inv))
+                                lastTouchX = x
+                                lastTouchY = y
+                                updateSelectionBounds()
+                            }
+                        } else {
+                            currentPath.lineTo(x, y)
+                        }
+                        invalidate()
+                    }
+
+                    MotionEvent.ACTION_UP -> {
+                        if (isErasing) {
+                            if (eraseBuffer.isNotEmpty()) {
+                                undoStack.add(DrawAction.Compound(eraseBuffer.toList()))
+                                eraseBuffer.clear()
+                                redoStack.clear()
+                            }
+                            return true
+                        }
+                        if (isSelecting) {
+                            if (isDrawingSelectionBox) selectPathsInBox()
+                            isDrawingSelectionBox = false
+                            isManipulatingSelection = false
+                            if (gestureActions.isNotEmpty()) {
+                                undoStack.add(DrawAction.Compound(gestureActions.toList()))
+                                redoStack.clear()
+                            }
+                        } else {
+                            currentPath.lineTo(x, y)
+                            paths.add(currentPath)
+                            undoStack.add(DrawAction.Add(currentPath))
+                            redoStack.clear()
+                            currentPath = Path()
+                        }
+                        gestureActions.clear()
+                        invalidate()
+                    }
                 }
             }
-
-            MotionEvent.ACTION_POINTER_DOWN -> {
-                if (event.pointerCount == 2 && selectedPaths.isNotEmpty()) {
-                    initialAngle = getAngle(event)
-                    initialDistance = getSpacing(event)
-                }
-            }
-
-            MotionEvent.ACTION_MOVE -> {
-                if (isErasing) {
-                    eraseAt(x, y)
-                } else if (event.pointerCount == 2 && selectedPaths.isNotEmpty()) {
-                    val angle = getAngle(event)
-                    val dist = getSpacing(event)
-                    val scale = dist / initialDistance
-                    val rotate = (angle - initialAngle).toFloat()
-                    val cx = selectionBounds.centerX()
-                    val cy = selectionBounds.centerY()
-                    val mtx = Matrix().apply {
-                        postScale(scale, scale, cx, cy)
-                        postRotate(rotate, cx, cy)
-                    }
-                    val inv = Matrix().apply { mtx.invert(this) }
-                    selectedPaths.forEach { it.transform(mtx) }
-                    gestureActions.add(DrawAction.Transform(selectedPaths.toList(), mtx, inv))
-                    initialAngle = angle
-                    initialDistance = dist
-                    updateSelectionBounds()
-                } else if (isSelecting) {
-                    if (isDrawingSelectionBox) {
-                        selectionEnd.set(x, y)
-                    } else if (isManipulatingSelection) {
-                        val dx = x - lastTouchX
-                        val dy = y - lastTouchY
-                        val mtx = Matrix().apply { setTranslate(dx, dy) }
-                        val inv = Matrix().apply { mtx.invert(this) }
-                        selectedPaths.forEach { it.transform(mtx) }
-                        gestureActions.add(DrawAction.Transform(selectedPaths.toList(), mtx, inv))
-                        lastTouchX = x
-                        lastTouchY = y
-                        updateSelectionBounds()
-                    }
-                } else {
-                    currentPath.lineTo(x, y)
-                }
-                invalidate()
-            }
-
-            MotionEvent.ACTION_UP -> {
-                if (isErasing) {
-                    if (eraseBuffer.isNotEmpty()) {
-                        undoStack.add(DrawAction.Compound(eraseBuffer.toList()))
-                        eraseBuffer.clear()
-                        redoStack.clear()
-                    }
-                    return true
-                }
-                if (isSelecting) {
-                    if (isDrawingSelectionBox) selectPathsInBox()
-                    isDrawingSelectionBox = false
-                    isManipulatingSelection = false
-                    if (gestureActions.isNotEmpty()) {
-                        undoStack.add(DrawAction.Compound(gestureActions.toList()))
-                        redoStack.clear()
-                    }
-                } else {
-                    currentPath.lineTo(x, y)
-                    paths.add(currentPath)
-                    undoStack.add(DrawAction.Add(currentPath))
-                    redoStack.clear()
-                    currentPath = Path()
-                }
-                gestureActions.clear()
-                invalidate()
-            }
+            else -> return false
         }
+
         return true
     }
 
